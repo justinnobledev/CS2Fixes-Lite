@@ -22,7 +22,6 @@
 
 #include "appframework/IAppSystem.h"
 #include "common.h"
-#include "commands.h"
 #include "detours.h"
 #include "patches.h"
 #include "icvar.h"
@@ -35,7 +34,6 @@
 #include "gamesystem.h"
 #include "playermanager.h"
 #include <entity.h>
-#include "commands.h"
 #include "ctimer.h"
 #include "eventlistener.h"
 #include "gameconfig.h"
@@ -241,8 +239,6 @@ bool CS2Fixes::Unload(char *error, size_t maxlen)
     SH_REMOVE_HOOK_MEMFUNC(INetworkServerService, StartupServer, g_pNetworkServerService, this, &CS2Fixes::Hook_StartupServer, true);
 
 	ConVar_Unregister();
-
-	g_CommandList.Purge();
 
 	FlushAllDetours();
 	UndoPatches();

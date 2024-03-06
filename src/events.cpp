@@ -19,7 +19,6 @@
 
 #include "common.h"
 #include "KeyValues.h"
-#include "commands.h"
 #include "eventlistener.h"
 #include "entity/cbaseplayercontroller.h"
 #include "entity/cgamerules.h"

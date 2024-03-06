@@ -23,7 +23,6 @@
 #include "common.h"
 #include "module.h"
 #include "addresses.h"
-#include "commands.h"
 #include "detours.h"
 #include "ctimer.h"
 #include "irecipientfilter.h"
