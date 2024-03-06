@@ -20,7 +20,6 @@
 #pragma once
 #include "entity/ccsplayercontroller.h"
 #include "convar.h"
-#include "adminsystem.h"
 #include <vector>
 
 #define CMDFLAG_NONE	(0)
@@ -45,7 +44,7 @@ void ClientPrint(CBasePlayerController *player, int destination, const char *msg
 class CChatCommand
 {
 public:
-	CChatCommand(const char *cmd, FnChatCommandCallback_t callback, const char *description, uint64 adminFlags = ADMFLAG_NONE, uint64 cmdFlags = CMDFLAG_NONE) :
+	CChatCommand(const char *cmd, FnChatCommandCallback_t callback, const char *description, uint64 adminFlags = 0, uint64 cmdFlags = CMDFLAG_NONE) :
 		m_pfnCallback(callback), m_sName(cmd), m_sDescription(description), m_nAdminFlags(adminFlags), m_nCmdFlags(cmdFlags)
 	{
 		g_CommandList.Insert(hash_32_fnv1a_const(cmd), this);
@@ -57,18 +56,11 @@ public:
 		if (player && !player->IsConnected())
 			return;
 
-		// If the command is run from server console, ignore admin flags
-		if (player && !CheckCommandAccess(player, m_nAdminFlags))
-			return;
-
 		m_pfnCallback(args, player);
 	}
 
-	static bool CheckCommandAccess(CBasePlayerController *pPlayer, uint64 flags);
-
 	const char* GetName() { return m_sName.c_str(); }
 	const char* GetDescription() { return m_sDescription.c_str(); }
-	uint64 GetAdminFlags() { return m_nAdminFlags; }
 	bool IsCommandFlagSet(uint64 iFlag)
 	{
 		return !iFlag || (m_nCmdFlags & iFlag);
@@ -93,7 +85,6 @@ struct WeaponMapEntry_t
 	int maxAmount = 0;
 };
 
-void RegisterWeaponCommands();
 void ParseChatCommand(const char *, CCSPlayerController *);
 
 #define CON_COMMAND_CHAT_FLAGS(name, description, flags)																						\

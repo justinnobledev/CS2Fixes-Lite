@@ -18,7 +18,6 @@
  */
 
 #include "entitylistener.h"
-#include "common.h"
 #include "cs2fixes.h"
 #include "gameconfig.h"
 #include "cs2_sdk/entity/cbaseentity.h"

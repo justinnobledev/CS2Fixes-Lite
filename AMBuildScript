@@ -149,8 +149,8 @@ class MMSPluginConfig(object):
       cxx.cflags += [
         '-pipe',
         '-fno-strict-aliasing',
-        '-Wall',
         '-Wno-uninitialized',
+        '-Wall',
         '-Wno-unused',
         '-Wno-switch',
         '-msse',

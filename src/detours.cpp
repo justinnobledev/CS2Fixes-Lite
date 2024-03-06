@@ -38,8 +38,6 @@
 #include "playermanager.h"
 #include "igameevents.h"
 #include "gameconfig.h"
-#include "zombiereborn.h"
-#include "customio.h"
 #include "serversideclient.h"
 #include "networksystem/inetworkserializer.h"
 
@@ -53,70 +51,14 @@ extern CGameEntitySystem *g_pEntitySystem;
 extern IGameEventManager2 *g_gameEventManager;
 extern CCSGameRules *g_pGameRules;
 
-DECLARE_DETOUR(UTIL_SayTextFilter, Detour_UTIL_SayTextFilter);
-DECLARE_DETOUR(UTIL_SayText2Filter, Detour_UTIL_SayText2Filter);
-DECLARE_DETOUR(IsHearingClient, Detour_IsHearingClient);
-DECLARE_DETOUR(CSoundEmitterSystem_EmitSound, Detour_CSoundEmitterSystem_EmitSound);
 DECLARE_DETOUR(TriggerPush_Touch, Detour_TriggerPush_Touch);
 DECLARE_DETOUR(CGameRules_Constructor, Detour_CGameRules_Constructor);
-DECLARE_DETOUR(CBaseEntity_TakeDamageOld, Detour_CBaseEntity_TakeDamageOld);
-DECLARE_DETOUR(CCSPlayer_WeaponServices_CanUse, Detour_CCSPlayer_WeaponServices_CanUse);
-DECLARE_DETOUR(CEntityIdentity_AcceptInput, Detour_CEntityIdentity_AcceptInput);
 DECLARE_DETOUR(CNavMesh_GetNearestNavArea, Detour_CNavMesh_GetNearestNavArea);
-DECLARE_DETOUR(FixLagCompEntityRelationship, Detour_FixLagCompEntityRelationship);
-DECLARE_DETOUR(SendNetMessage, Detour_SendNetMessage);
-DECLARE_DETOUR(HostStateRequest, Detour_HostStateRequest);
 
 void FASTCALL Detour_CGameRules_Constructor(CGameRules *pThis)
 {
 	g_pGameRules = (CCSGameRules*)pThis;
 	CGameRules_Constructor(pThis);
-}
-
-static bool g_bBlockMolotovSelfDmg = false;
-static bool g_bBlockAllDamage = false;
-
-FAKE_BOOL_CVAR(cs2f_block_molotov_self_dmg, "Whether to block self-damage from molotovs", g_bBlockMolotovSelfDmg, false, false)
-FAKE_BOOL_CVAR(cs2f_block_all_dmg, "Whether to block all damage to players", g_bBlockAllDamage, false, false)
-
-void FASTCALL Detour_CBaseEntity_TakeDamageOld(Z_CBaseEntity *pThis, CTakeDamageInfo *inputInfo)
-{
-#ifdef _DEBUG
-	Message("\n--------------------------------\n"
-			"TakeDamage on %s\n"
-			"Attacker: %s\n"
-			"Inflictor: %s\n"
-			"Ability: %s\n"
-			"Damage: %.2f\n"
-			"Damage Type: %i\n"
-			"--------------------------------\n",
-			pThis->GetClassname(),
-			inputInfo->m_hAttacker.Get() ? inputInfo->m_hAttacker.Get()->GetClassname() : "NULL",
-			inputInfo->m_hInflictor.Get() ? inputInfo->m_hInflictor.Get()->GetClassname() : "NULL",
-			inputInfo->m_hAbility.Get() ? inputInfo->m_hAbility.Get()->GetClassname() : "NULL",
-			inputInfo->m_flDamage,
-			inputInfo->m_bitsDamageType);
-#endif
-	
-	// Block all player damage if desired
-	if (g_bBlockAllDamage && pThis->IsPawn())
-		return;
-
-	CBaseEntity *pInflictor = inputInfo->m_hInflictor.Get();
-	const char *pszInflictorClass = pInflictor ? pInflictor->GetClassname() : "";
-
-	// Prevent everything but nades from inflicting blast damage
-	if (inputInfo->m_bitsDamageType == DamageTypes_t::DMG_BLAST && V_strncmp(pszInflictorClass, "hegrenade", 9))
-		inputInfo->m_bitsDamageType = DamageTypes_t::DMG_GENERIC;
-
-	if (g_bEnableZR && ZR_Detour_TakeDamageOld((CCSPlayerPawn*)pThis, inputInfo))
-		return;
-
-	// Prevent molly on self
-	if (g_bBlockMolotovSelfDmg && inputInfo->m_hAttacker == pThis && !V_strncmp(pszInflictorClass, "inferno", 7))
-		return;
-
-	CBaseEntity_TakeDamageOld(pThis, inputInfo);
 }
 
 static bool g_bUseOldPush = false;
@@ -189,153 +131,6 @@ void FASTCALL Detour_TriggerPush_Touch(CTriggerPush* pPush, Z_CBaseEntity* pOthe
 	pOther->m_fFlags(flags);
 }
 
-void FASTCALL Detour_CSoundEmitterSystem_EmitSound(ISoundEmitterSystemBase *pSoundEmitterSystem, CEntityIndex *a2, IRecipientFilter &filter, uint32 a4, void *a5)
-{
-	//ConMsg("Detour_CSoundEmitterSystem_EmitSound\n");
-	CSoundEmitterSystem_EmitSound(pSoundEmitterSystem, a2, filter, a4, a5);
-}
-
-bool FASTCALL Detour_IsHearingClient(void* serverClient, int index)
-{
-	ZEPlayer* player = g_playerManager->GetPlayer(index);
-	if (player && player->IsMuted())
-		return false;
-
-	return IsHearingClient(serverClient, index);
-}
-
-void SayChatMessageWithTimer(IRecipientFilter &filter, const char *pText, CCSPlayerController *pPlayer, uint64 eMessageType)
-{
-	char buf[256];
-
-	// Filter console message - remove non-alphanumeric chars and convert to lowercase
-	uint32 uiTextLength = strlen(pText);
-	uint32 uiFilteredTextLength = 0;
-	char filteredText[256];
-
-	for (uint32 i = 0; i < uiTextLength; i++)
-	{
-		if (pText[i] >= 'A' && pText[i] <= 'Z')
-			filteredText[uiFilteredTextLength++] = pText[i] + 32;
-		if (pText[i] == ' ' || (pText[i] >= '0' && pText[i] <= '9') || (pText[i] >= 'a' && pText[i] <= 'z'))
-			filteredText[uiFilteredTextLength++] = pText[i];
-	}
-	filteredText[uiFilteredTextLength] = '\0';
-
-	// Split console message into words seperated by the space character
-	CUtlVector<char*, CUtlMemory<char*, int>> words;
-	V_SplitString(filteredText, " ", words);
-
-	//Word count includes the first word "Console:" at index 0, first relevant word is at index 1
-	int iWordCount = words.Count();
-	uint32 uiTriggerTimerLength = 0;
-
-	if (iWordCount == 2)
-		uiTriggerTimerLength = V_StringToUint32(words.Element(1), 0, NULL, NULL, PARSING_FLAG_SKIP_WARNING);
-
-	for (int i = 1; i < iWordCount && uiTriggerTimerLength == 0; i++)
-	{
-		uint32 uiCurrentValue = V_StringToUint32(words.Element(i), 0, NULL, NULL, PARSING_FLAG_SKIP_WARNING);
-		uint32 uiNextWordLength = 0;
-		char* pNextWord = NULL;
-
-		if (i + 1 < iWordCount)
-		{
-			pNextWord = words.Element(i + 1);
-			uiNextWordLength = strlen(pNextWord);
-		}
-
-		// Case: ... X sec(onds) ... or ... X min(utes) ...
-		if (pNextWord != NULL && uiNextWordLength > 2 && uiCurrentValue > 0)
-		{
-			if (pNextWord[0] == 's' && pNextWord[1] == 'e' && pNextWord[2] == 'c')
-				uiTriggerTimerLength = uiCurrentValue;
-			if (pNextWord[0] == 'm' && pNextWord[1] == 'i' && pNextWord[2] == 'n')
-				uiTriggerTimerLength = uiCurrentValue * 60;
-		}
-
-		// Case: ... Xs - only support up to 3 digit numbers (in seconds) for this timer parse method
-		if (uiCurrentValue == 0)
-		{
-			char* pCurrentWord = words.Element(i);
-			uint32 uiCurrentScanLength = MIN(strlen(pCurrentWord), 4);
-
-			for (uint32 j = 0; j < uiCurrentScanLength; j++)
-			{
-				if (pCurrentWord[j] >= '0' && pCurrentWord[j] <= '9')
-					continue;
-				
-				if (pCurrentWord[j] == 's')
-				{
-					pCurrentWord[j] = '\0';
-					uiTriggerTimerLength = V_StringToUint32(pCurrentWord, 0, NULL, NULL, PARSING_FLAG_SKIP_WARNING);
-				}
-				break;
-			}
-		}
-	}
-	words.PurgeAndDeleteElements();
-
-	float fCurrentRoundClock = g_pGameRules->m_iRoundTime - (gpGlobals->curtime - g_pGameRules->m_fRoundStartTime.Get().m_Value);
-
-	// Only display trigger time if the timer is greater than 4 seconds, and time expires within the round
-	if ((uiTriggerTimerLength > 4) && (fCurrentRoundClock > uiTriggerTimerLength))
-	{
-		int iTriggerTime = fCurrentRoundClock - uiTriggerTimerLength;
-
-		// Round timer to nearest whole second
-		if ((int)(fCurrentRoundClock - 0.5f) == (int)fCurrentRoundClock)
-			iTriggerTime++;
-
-		int mins = iTriggerTime / 60;
-		int secs = iTriggerTime % 60;
-
-		V_snprintf(buf, sizeof(buf), "%s %s %s %2d:%02d", " \7CONSOLE:\4", pText + sizeof("Console:"), "\x10- @", mins, secs);
-	}
-	else
-		V_snprintf(buf, sizeof(buf), "%s %s", " \7CONSOLE:\4", pText + sizeof("Console:"));
-
-	UTIL_SayTextFilter(filter, buf, pPlayer, eMessageType);
-}
-
-bool g_bEnableTriggerTimer = false;
-
-FAKE_BOOL_CVAR(cs2f_trigger_timer_enable, "Whether to process countdown messages said by Console (e.g. Hold for 10 seconds) and append the round time where the countdown resolves", g_bEnableTriggerTimer, false, false)
-
-void FASTCALL Detour_UTIL_SayTextFilter(IRecipientFilter &filter, const char *pText, CCSPlayerController *pPlayer, uint64 eMessageType)
-{
-	if (pPlayer)
-		return UTIL_SayTextFilter(filter, pText, pPlayer, eMessageType);
-
-	if (g_bEnableTriggerTimer)
-		return SayChatMessageWithTimer(filter, pText, pPlayer, eMessageType);
-
-	char buf[256];
-	V_snprintf(buf, sizeof(buf), "%s %s", " \7CONSOLE:\4", pText + sizeof("Console:"));
-
-	UTIL_SayTextFilter(filter, buf, pPlayer, eMessageType);
-}
-
-void FASTCALL Detour_UTIL_SayText2Filter(
-	IRecipientFilter &filter,
-	CCSPlayerController *pEntity,
-	uint64 eMessageType,
-	const char *msg_name,
-	const char *param1,
-	const char *param2,
-	const char *param3,
-	const char *param4)
-{
-#ifdef _DEBUG
-    CPlayerSlot slot = filter.GetRecipientIndex(0);
-	CCSPlayerController* target = CCSPlayerController::FromSlot(slot);
-
-	if (target)
-		Message("Chat from %s to %s: %s\n", param1, target->GetPlayerName(), param2);
-#endif
-
-	UTIL_SayText2Filter(filter, pEntity, eMessageType, msg_name, param1, param2, param3, param4);
-}
 
 void Detour_Log()
 {
@@ -385,102 +180,14 @@ CON_COMMAND_F(toggle_logs, "Toggle printing most logs and warnings", FCVAR_SPONL
 	bBlock = !bBlock;
 }
 
-bool FASTCALL Detour_CCSPlayer_WeaponServices_CanUse(CCSPlayer_WeaponServices *pWeaponServices, CBasePlayerWeapon* pPlayerWeapon)
-{
-	if (g_bEnableZR && !ZR_Detour_CCSPlayer_WeaponServices_CanUse(pWeaponServices, pPlayerWeapon))
-	{
-		return false;
-	}
-
-	return CCSPlayer_WeaponServices_CanUse(pWeaponServices, pPlayerWeapon);
-}
-
-bool FASTCALL Detour_CEntityIdentity_AcceptInput(CEntityIdentity* pThis, CUtlSymbolLarge* pInputName, CEntityInstance* pActivator, CEntityInstance* pCaller, variant_t* value, int nOutputID)
-{
-	if (g_bEnableZR)
-		ZR_Detour_CEntityIdentity_AcceptInput(pThis, pInputName, pActivator, pCaller, value, nOutputID);
-
-    if (!V_strcasecmp(pInputName->String(), "KeyValues"))
-    {
-        if ((value->m_type == FIELD_CSTRING || value->m_type == FIELD_STRING) && value->m_pszString)
-        {
-            // always const char*, even if it's FIELD_STRING (that is bug string from lua 'EntFire')
-            return CustomIO_HandleInput(pThis->m_pInstance, value->m_pszString, pActivator, pCaller);
-        }
-        Message("Invalid value type for input %s\n", pInputName->String());
-        return false;
-    }
-
-	return CEntityIdentity_AcceptInput(pThis, pInputName, pActivator, pCaller, value, nOutputID);
-}
-
 bool g_bBlockNavLookup = false;
-
 FAKE_BOOL_CVAR(cs2f_block_nav_lookup, "Whether to block navigation mesh lookup, improves server performance but breaks bot navigation", g_bBlockNavLookup, false, false)
-
 void* FASTCALL Detour_CNavMesh_GetNearestNavArea(int64_t unk1, float* unk2, unsigned int* unk3, unsigned int unk4, int64_t unk5, int64_t unk6, float unk7, int64_t unk8)
 {
 	if (g_bBlockNavLookup)
 		return nullptr;
 
 	return CNavMesh_GetNearestNavArea(unk1, unk2, unk3, unk4, unk5, unk6, unk7, unk8);
-}
-
-bool g_bFixLagCompCrash = false;
-
-FAKE_BOOL_CVAR(cs2f_fix_lag_comp_crash, "Whether to fix lag compensation crash with env_entity_maker", g_bFixLagCompCrash, false, false)
-
-void FASTCALL Detour_FixLagCompEntityRelationship(void *a1, CEntityInstance *pEntity, bool a3)
-{
-	if (g_bFixLagCompCrash && strcmp(pEntity->GetClassname(), "env_entity_maker") == 0)
-		return;
-
-	return FixLagCompEntityRelationship(a1, pEntity, a3);
-}
-
-std::string g_sExtraAddon;
-FAKE_STRING_CVAR(cs2f_extra_addon, "The workshop ID of an extra addon to mount and send to clients", g_sExtraAddon, false);
-
-void *FASTCALL Detour_HostStateRequest(void *a1, void **pRequest)
-{
-	// skip if we're doing anything other than changelevel
-	if (g_sExtraAddon.empty() || V_strnicmp((char *)pRequest[2], "changelevel", 11))
-		return HostStateRequest(a1, pRequest);
-
-	// This offset hasn't changed in 6 years so it should be safe
-	CUtlString *sAddonString = (CUtlString*)(pRequest + 11);
-
-	// addons are simply comma-delimited, can have any number of them
-	if (!sAddonString->IsEmpty())
-		sAddonString->Format("%s,%s", sAddonString->Get(), g_sExtraAddon.c_str());
-	else
-		sAddonString->Set(g_sExtraAddon.c_str());
-
-	return HostStateRequest(a1, pRequest);
-}
-
-extern double g_flUniversalTime;
-
-void FASTCALL Detour_SendNetMessage(INetChannel *pNetChan, INetworkSerializable *pNetMessage, void *pData, int a4)
-{
-	NetMessageInfo_t *info = pNetMessage->GetNetMessageInfo();
-
-	// 7 for signon messages
-	if (info->m_MessageId != 7 || g_sExtraAddon.empty())
-		return SendNetMessage(pNetChan, pNetMessage, pData, a4);
-
-	ClientJoinInfo_t *pPendingClient = GetPendingClient(pNetChan);
-
-	if (pPendingClient)
-	{
-		Message("Detour_SendNetMessage: Sending addon %s to client %lli\n", g_sExtraAddon.c_str(), pPendingClient->steamid);
-		CNETMsg_SignonState *pMsg = (CNETMsg_SignonState *)pData;
-		pMsg->set_addons(g_sExtraAddon.c_str());
-		pMsg->set_signon_state(SIGNONSTATE_CHANGELEVEL);
-		pPendingClient->signon_timestamp = g_flUniversalTime;
-	}
-
-	SendNetMessage(pNetChan, pNetMessage, pData, a4);
 }
 
 CUtlVector<CDetourBase *> g_vecDetours;
@@ -497,22 +204,6 @@ bool InitDetours(CGameConfig *gameConfig)
 			success = false;
 	}
 
-	if (!UTIL_SayTextFilter.CreateDetour(gameConfig))
-		success = false;
-	UTIL_SayTextFilter.EnableDetour();
-
-	if (!UTIL_SayText2Filter.CreateDetour(gameConfig))
-		success = false;
-	UTIL_SayText2Filter.EnableDetour();
-
-	if (!IsHearingClient.CreateDetour(gameConfig))
-		success = false;
-	IsHearingClient.EnableDetour();
-
-	if (!CSoundEmitterSystem_EmitSound.CreateDetour(gameConfig))
-		success = false;
-	CSoundEmitterSystem_EmitSound.EnableDetour();
-
 	if (!TriggerPush_Touch.CreateDetour(gameConfig))
 		success = false;
 	TriggerPush_Touch.EnableDetour();
@@ -521,33 +212,9 @@ bool InitDetours(CGameConfig *gameConfig)
 		success = false;
 	CGameRules_Constructor.EnableDetour();
 
-	if (!CBaseEntity_TakeDamageOld.CreateDetour(gameConfig))
-		success = false;
-	CBaseEntity_TakeDamageOld.EnableDetour();
-
-	if (!CCSPlayer_WeaponServices_CanUse.CreateDetour(gameConfig))
-		success = false;
-	CCSPlayer_WeaponServices_CanUse.EnableDetour();
-  
-	if (!CEntityIdentity_AcceptInput.CreateDetour(gameConfig))
-		success = false;
-	CEntityIdentity_AcceptInput.EnableDetour();
-
 	if (!CNavMesh_GetNearestNavArea.CreateDetour(gameConfig))
 		success = false;
 	CNavMesh_GetNearestNavArea.EnableDetour();
-
-	if (!FixLagCompEntityRelationship.CreateDetour(gameConfig))
-		success = false;
-	FixLagCompEntityRelationship.EnableDetour();
-
-	if (!SendNetMessage.CreateDetour(gameConfig))
-		success = false;
-	SendNetMessage.EnableDetour();
-
-	if (!HostStateRequest.CreateDetour(gameConfig))
-		success = false;
-	HostStateRequest.EnableDetour();
 
 	return success;
 }
