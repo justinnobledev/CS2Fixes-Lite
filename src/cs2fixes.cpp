@@ -32,9 +32,9 @@
 #include "entitysystem.h"
 #include "engine/igameeventsystem.h"
 #include "gamesystem.h"
+#include "ctimer.h"
 #include "playermanager.h"
 #include <entity.h>
-#include "ctimer.h"
 #include "eventlistener.h"
 #include "gameconfig.h"
 #include "entity/cgamerules.h"
